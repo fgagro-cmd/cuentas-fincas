@@ -4,7 +4,7 @@
    los presupuestos y parámetros. Guarda una copia en el aparato para verla sin conexión.
    El código no lleva datos: todo llega de tu hoja de Google. */
 
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 
 /* ---------- Utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -77,7 +77,9 @@ function build() {
   // Fincas: las propias del maestro (con superficie y árboles) y cualquier otra que aparezca en las líneas
   const fs = (d.fincas || []).map((f) => ({ id: f.id, nombre: f.nombre, ha: ok(f.ha) ? f.ha : null, arboles: ok(f.arboles) ? f.arboles : null }));
   const nombres = new Set(fs.map((f) => f.nombre));
-  for (const l of LINEAS) if (!nombres.has(l.finca)) { nombres.add(l.finca); fs.push({ id: l.finca, nombre: l.finca, ha: null, arboles: null }); }
+  // Si no se pudo leer el maestro, el código de cada finca (F008…) se saca de los presupuestos guardados
+  const idPorNombre = new Map((d.presupuestos || []).map((p) => [p.finca, p.fincaId]));
+  for (const l of LINEAS) if (!nombres.has(l.finca)) { nombres.add(l.finca); fs.push({ id: idPorNombre.get(l.finca) || l.finca, nombre: l.finca, ha: null, arboles: null, sinMaestro: true }); }
   FINCAS = fs.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
   // Presupuestos guardados + cambios pendientes de aquí
   PRES = {};
@@ -172,7 +174,8 @@ async function refresh({ manual = false, auto = false } = {}) {
     }
     const r = await callScript('cuentas');
     if (!r.ok) throw new Error(errScript(r, 'No se pudieron leer los datos'));
-    datos = { tabla: r.tabla || [], fincas: r.fincas || [], avisoFincas: r.avisoFincas || '', presupuestos: r.presupuestos || [], parametros: r.parametros || {}, fecha: r.fecha || '', lastFetch: new Date().toISOString() };
+    const fincasOk = (r.fincas && r.fincas.length) ? r.fincas : ((datos && datos.fincas) || []);
+    datos = { tabla: r.tabla || [], fincas: fincasOk, avisoFincas: r.avisoFincas || '', presupuestos: r.presupuestos || [], parametros: r.parametros || {}, fecha: r.fecha || '', lastFetch: new Date().toISOString() };
     save('datos', datos);
     net.lastError = '';
     build();
@@ -508,6 +511,11 @@ function drawParam(box) {
           <label class="fld" style="margin:0"><span>Base</span><select data-base="${esc(f.id)}">${bases.map(([k, b]) => `<option value="${k}" ${r.base === k ? 'selected' : ''}>${esc(b.label.replace('% de ', ''))}</option>`).join('')}</select></label>
         </div></div>`; }).join('')}
     <div class="actions"><button class="btn primary" id="pSave">Guardar parámetros</button></div>`;
+  const faltan = FINCAS.filter((f) => f.sinMaestro);
+  if (faltan.length) {
+    box.querySelector('#pSave').disabled = true;
+    box.insertAdjacentHTML('beforeend', `<p class="hint warn" style="margin-top:8px">No se pueden guardar hasta leer el Maestro de fincas (faltan: ${faltan.map((f) => esc(f.nombre)).join(', ')}). Así no se pierden los porcentajes que ya tienes en la hoja.</p>`);
+  }
   $('#pSave', box).onclick = () => {
     const mo = parseNum($('#pMo', box).value);
     if (!(mo >= 0)) return toast('Revisa el precio de la mano de obra', true);
