@@ -4,7 +4,7 @@
    los presupuestos y parámetros. Guarda una copia en el aparato para verla sin conexión.
    El código no lleva datos: todo llega de tu hoja de Google. */
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 
 /* ---------- Utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -132,7 +132,7 @@ function presDe(camp, id) {
 /* ---------- Conexión con la hoja de Gestión fincas ---------- */
 async function postScript(url, clave, accion, extra = {}) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 60000);
+  const t = setTimeout(() => ctrl.abort(), 180000);
   try {
     // Sin cabeceras propias: así es una petición simple (text/plain) y Google no exige comprobación previa.
     const res = await fetch(url, { method: 'POST', body: JSON.stringify({ accion, clave, ...extra }), signal: ctrl.signal });
