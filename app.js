@@ -4,7 +4,7 @@
    los presupuestos y parámetros. Guarda una copia en el aparato para verla sin conexión.
    El código no lleva datos: todo llega de tu hoja de Google. */
 
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.2.0';
 
 /* ---------- Utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -65,7 +65,8 @@ let conn = { url: '', clave: '' };
 let datos = null;                       // lo último leído de la hoja
 let pend = { cambios: [], param: null }; // cambios hechos aquí y aún no guardados en la hoja
 let net = { running: false, lastError: '' };
-const ui = { tab: 'resultados', camp: null, finca: '__all', modo: 'real', pcamp: null, pfinca: null };
+const ui = { tab: 'dashboard', camp: null, finca: '__all', modo: 'real', pcamp: null, pfinca: null, rmet: 'resultado' };
+let ultimoAjuste = null;               // { camp, fecha, items: [{ fincaId, concepto, previo }] } para «Deshacer»
 
 /* Derivados de los datos */
 let LINEAS = [], FINCAS = [], PRES = {}, PARAM = { moEurH: 8, reglas: {} }, CAMPS = [];
@@ -252,6 +253,206 @@ function bindAviso() {
   const r = $('#goRf'); if (r) r.onclick = () => refresh({ manual: true });
 }
 
+/* ---------- Gráficos (SVG hecho a mano: sin librerías, funciona sin conexión) ---------- */
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const kE = (v) => (Math.abs(v) >= 1000 ? nf(v / 1000, 0, Math.abs(v) < 10000 ? 1 : 0) + ' k' : nf(v, 0, 0));
+function ticks(min, max, n = 4) {
+  if (min === max) { max = min + 1; }
+  const paso0 = (max - min) / n, pot = Math.pow(10, Math.floor(Math.log10(paso0)));
+  const paso = [1, 2, 2.5, 5, 10].map((m) => m * pot).find((p) => p >= paso0) || 10 * pot;
+  const a = Math.floor(min / paso) * paso, z = Math.ceil(max / paso) * paso, t = [];
+  for (let v = a; v <= z + paso / 2; v += paso) t.push(Math.round(v * 1e6) / 1e6);
+  return t;
+}
+const tipAttr = (txt) => ` data-tip="${esc(txt)}"`;
+/* Líneas acumuladas por mes. series: [{ nombre, vals (null = sin dato), cls }] · ref: { v, txt } línea discontinua */
+function svgLineas(W, { etiquetas, series, ref, marca, fmt = eur0, ax = kE }) {
+  const H = 200, L = 46, R = 12, T = 12, B = 26;
+  const todos = series.flatMap((s) => s.vals.filter(ok)).concat(ref && ok(ref.v) ? [ref.v] : []);
+  const tk = ticks(Math.min(0, ...todos), Math.max(1, ...todos));
+  const y0 = tk[0], y1 = tk[tk.length - 1], n = etiquetas.length;
+  const X = (i) => L + (n === 1 ? 0 : (i * (W - L - R)) / (n - 1)), Y = (v) => T + (H - T - B) * (1 - (v - y0) / (y1 - y0));
+  let g = tk.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="ax" x="${L - 6}" y="${Y(v) + 3.5}" text-anchor="end">${ax(v)}</text>`).join('');
+  const cada = Math.ceil(n / Math.max(3, Math.floor((W - L - R) / 54)));
+  g += etiquetas.map((e, i) => (i % cada === 0 ? `<text class="ax" x="${X(i)}" y="${H - 8}" text-anchor="${i === 0 ? 'start' : X(i) > W - R - 20 ? 'end' : 'middle'}">${esc(e)}</text>` : '')).join('');
+  if (ref && ok(ref.v)) g += `<line class="ref" x1="${L}" x2="${W - R}" y1="${Y(ref.v)}" y2="${Y(ref.v)}"/><text class="ax reft" x="${W - R}" y="${Y(ref.v) - 5}" text-anchor="end">${esc(ref.txt)}</text>`;
+  for (const s of series) {
+    let d = '', last = null;
+    s.vals.forEach((v, i) => { if (!ok(v)) return; d += (last === null || last !== i - 1 ? 'M' : 'L') + X(i).toFixed(1) + ',' + Y(v).toFixed(1); last = i; });
+    if (d) g += `<path class="ln ${s.cls}" d="${d}"/>`;
+    if (last !== null) g += `<circle class="pt ${s.cls}" cx="${X(last)}" cy="${Y(s.vals[last])}" r="4.5"/>`;
+  }
+  if (marca && ok(marca.i) && ok(marca.v)) g += `<circle class="pt ${marca.cls} hollow" cx="${X(marca.i)}" cy="${Y(marca.v)}" r="4.5"/>`;
+  // Columnas para el cursor: al pasar o tocar, línea vertical y valores del mes
+  const w = n > 1 ? (W - L - R) / (n - 1) : W - L - R;
+  g += etiquetas.map((e, i) => `<g class="col"${tipAttr(`${e}\n` + series.map((s) => `${s.nombre}: ${ok(s.vals[i]) ? fmt(s.vals[i]) : '—'}`).join('\n'))}><line class="xh" x1="${X(i)}" x2="${X(i)}" y1="${T}" y2="${H - B}"/><rect class="hit" x="${X(i) - w / 2}" y="${T}" width="${w}" height="${H - T - B}"/></g>`).join('');
+  return `<svg class="viz" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
+/* Barras verticales por categoría, una o varias series. fantasma: { i, vals[] } contorno del presupuesto */
+function svgBarras(W, { cats, series, fmt = eur0, fantasma, destacar, etiquetar }) {
+  const H = 210, L = 46, R = 8, T = 16, B = 26;
+  const todos = series.flatMap((s) => s.vals.filter(ok)).concat(fantasma ? fantasma.vals.filter(ok) : []);
+  const tk = ticks(Math.min(0, ...todos), Math.max(0, ...todos, 1));
+  const y0 = tk[0], y1 = tk[tk.length - 1];
+  const Y = (v) => T + (H - T - B) * (1 - (v - y0) / (y1 - y0));
+  const banda = (W - L - R) / cats.length, ns = series.length;
+  const bw = Math.max(4, Math.min(34, (banda * 0.72 - (ns - 1) * 2) / ns));
+  let g = tk.map((v) => `<line class="grid${v === 0 ? ' zero' : ''}" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="ax" x="${L - 6}" y="${Y(v) + 3.5}" text-anchor="end">${kE(v)}</text>`).join('');
+  cats.forEach((c, ci) => {
+    const x0 = L + ci * banda + (banda - (ns * bw + (ns - 1) * 2)) / 2;
+    g += `<text class="ax${destacar === ci ? ' strong' : ''}" x="${L + ci * banda + banda / 2}" y="${H - 8}" text-anchor="middle">${esc(c)}</text>`;
+    series.forEach((s, si) => {
+      const v = s.vals[ci], x = x0 + si * (bw + 2);
+      if (fantasma && fantasma.i === ci && ok(fantasma.vals[si])) {
+        const fv = fantasma.vals[si];
+        g += `<rect class="ghost ${s.cls}" x="${x}" y="${Math.min(Y(fv), Y(0))}" width="${bw}" height="${Math.abs(Y(fv) - Y(0))}" rx="3"/>`;
+      }
+      if (!ok(v)) return;
+      const neg = v < 0, cls = s.signo && neg ? 'negb' : s.cls;
+      const yT = Math.min(Y(v), Y(0)), h = Math.max(1, Math.abs(Y(v) - Y(0)));
+      g += `<rect class="bar ${cls}" x="${x}" y="${yT}" width="${bw}" height="${h}" rx="3"/>`;
+      if (etiquetar && ns === 1 && bw >= 22) g += `<text class="ax val" x="${x + bw / 2}" y="${neg ? yT + h + 11 : yT - 4}" text-anchor="middle">${kE(v)}</text>`;
+    });
+    const tip = `${c}\n` + series.map((s, si) => `${s.nombre}: ${ok(s.vals[ci]) ? fmt(s.vals[ci]) : '—'}${fantasma && fantasma.i === ci && ok(fantasma.vals[si]) ? ` (presupuesto ${fmt(fantasma.vals[si])})` : ''}`).join('\n');
+    g += `<rect class="hit"${tipAttr(tip)} x="${L + ci * banda}" y="${T}" width="${banda}" height="${H - T - B}"/>`;
+  });
+  return `<svg class="viz" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
+/* Barras horizontales (ranking). filas: [{ nombre, v, sub, marcada }] */
+function svgRanking(W, filas, fmt) {
+  const fh = 30, H = filas.length * fh + 6, lw = Math.min(150, W * 0.36), vw = 74;
+  const vals = filas.map((f) => f.v).filter(ok);
+  const min = Math.min(0, ...vals), max = Math.max(0, ...vals, 0.0001);
+  const X = (v) => lw + ((v - min) / (max - min || 1)) * (W - lw - vw);
+  let g = '';
+  filas.forEach((f, i) => {
+    const y = i * fh + 4;
+    g += `<text class="ax rk${f.marcada ? ' strong' : ''}" x="0" y="${y + 18}">${esc(f.nombre.length > 22 ? f.nombre.slice(0, 21) + '…' : f.nombre)}</text>`;
+    if (ok(f.v)) {
+      const x = Math.min(X(0), X(f.v)), w = Math.max(2, Math.abs(X(f.v) - X(0)));
+      g += `<rect class="bar ${f.v < 0 ? 'negb' : 's1'}${f.marcada ? '' : ' soft'}" x="${x}" y="${y + 6}" width="${w}" height="16" rx="3"/>`;
+      g += `<text class="ax val${f.v < 0 ? ' negt' : ''}" x="${W}" y="${y + 18}" text-anchor="end">${esc(fmt(f.v))}</text>`;
+    } else g += `<text class="ax" x="${W}" y="${y + 18}" text-anchor="end">${esc(f.sub || 'sin datos')}</text>`;
+    g += `<rect class="hit"${tipAttr(`${f.nombre}\n${ok(f.v) ? fmt(f.v) : f.sub || 'sin datos'}`)} x="0" y="${y}" width="${W}" height="${fh}"/>`;
+  });
+  if (min < 0) g += `<line class="grid zero" x1="${X(0)}" x2="${X(0)}" y1="0" y2="${H}"/>`;
+  return `<svg class="viz" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
+const leyenda = (items) => `<div class="leg">${items.map(([cls, txt]) => `<span><i class="sw ${cls}"></i>${esc(txt)}</span>`).join('')}</div>`;
+/* Tooltip común a todos los gráficos */
+function onTip(e) {
+  const tip = $('#vizTip'); if (!tip) return;
+  const h = e.target.closest && e.target.closest('[data-tip]');
+  document.querySelectorAll('.viz .col.on').forEach((c) => { if (c !== h) c.classList.remove('on'); });
+  if (!h || !h.closest('.viz')) { tip.hidden = true; return; }
+  if (h.classList.contains('col')) h.classList.add('on');
+  const [t0, ...rest] = h.dataset.tip.split('\n');
+  tip.innerHTML = `<b>${esc(t0)}</b>${rest.map((r) => `<div>${esc(r)}</div>`).join('')}`;
+  tip.hidden = false;
+  const vw = document.documentElement.clientWidth, tw = tip.offsetWidth, th = tip.offsetHeight;
+  let x = e.clientX + 12, y = e.clientY - th - 12;
+  if (x + tw > vw - 8) x = e.clientX - tw - 12;
+  if (x < 8) x = 8;
+  if (y < 8) y = e.clientY + 16;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+
+/* ---------- Pestaña: Dashboard ---------- */
+const RMET = {
+  resultado: { label: 'Resultado', f: (x) => x.resultado, fmt: eur0, desc: true },
+  margen: { label: 'Margen', f: (x) => x.margen, fmt: (v) => nf(v * 100, 1, 1) + ' %', desc: true },
+  res_ha: { label: '€/ha', f: (x, f) => (ok(f.ha) && f.ha > 0 ? x.resultado / f.ha : null), fmt: (v) => eur0(v) + '/ha', desc: true, sub: 'falta la superficie' },
+  coste: { label: 'Coste €/kg', f: (x) => (x.kg > 0 ? x.coste_prod : null), fmt: (v) => nf(v, 3, 3) + ' €/kg', desc: false, sub: 'sin cosecha' },
+  kg_ha: { label: 'kg/ha', f: (x) => (x.kg > 0 ? x.kg_ha : null), fmt: (v) => nf(v, 0, 0) + ' kg/ha', desc: true, sub: 'sin cosecha' },
+};
+const etiquetaMes = (c, off) => { const m = c * 12 + off, y = Math.floor(m / 12), mm = ((m % 12) + 12) % 12; return MESES[mm] + ' ' + String(y).slice(2); };
+const pctTxt = (a, b) => (b ? (a >= b ? '+' : '−') + nf(Math.abs(a / b - 1) * 100, 0, 0) + ' %' : '');
+let dashCharts = [];
+function renderDashboard() {
+  const c = ui.camp, id = ui.finca, finca = id === '__all' ? null : nombreFinca(id);
+  const aviso = avisoSinDatos();
+  if (!LINEAS.length) { $('#view').innerHTML = aviso; bindAviso(); return; }
+  const hoy = hoyISO();
+  const pres = presDe(c, id);
+  dashCharts = [];
+  // 1 · Ritmo de la campaña
+  const bloqueRitmo = (cual, titulo, nota, presV) => {
+    const r = CU.ritmo(LINEAS, c, finca, cual, hoy);
+    const et = r.meses.map((o) => etiquetaMes(c, o));
+    const ref = ok(presV) && presV > 0 ? { v: presV, txt: `presupuesto ${eur0(presV)}` } : null;
+    const marcaI = r.abierta ? r.meses.indexOf(r.hoyOff) : -1;
+    const idc = 'ch' + dashCharts.length;
+    dashCharts.push({ id: idc, f: (W) => svgLineas(W, { etiquetas: et, series: [{ nombre: String(c - 1), vals: r.prev, cls: 'sp' }, { nombre: String(c), vals: r.cur, cls: 's1' }], ref, marca: marcaI >= 0 && r.abierta ? { i: marcaI, v: r.prevMisma, cls: 'sp' } : null }) });
+    const comp = r.abierta
+      ? `${eur0(r.curTot)} <span class="${cual === 'ingresos' ? '' : r.curTot > r.prevMisma ? 'up' : ''}">${pctTxt(r.curTot, r.prevMisma)}</span> frente a ${c - 1} a la misma fecha (${eur0(r.prevMisma)}; acabó en ${eur0(r.prevTotal)})`
+      : `${eur0(r.curTot)} · ${c - 1}: ${eur0(r.prevTotal)} <span>${pctTxt(r.curTot, r.prevTotal)}</span>`;
+    const pp = ref ? ` · ${nf((r.curTot / presV) * 100, 0, 0)} % del presupuesto` : '';
+    return `<section class="vcard"><h3>${esc(titulo)}</h3><p class="vsub">${esc(nota)}</p>
+      <p class="vstat">${comp}${pp}</p>
+      <div class="chart" id="${idc}"></div>
+      ${leyenda([['s1', `${c}${r.abierta ? ' (hasta hoy)' : ''}`], ['sp', `${c - 1}`], ...(ref ? [['ref', 'Presupuesto ' + c]] : [])])}</section>`;
+  };
+  const presCultivo = pres ? pres.gastos - pres.arrendamiento - pres.recoleccion : null;
+  // 2 · Evolución por campaña
+  const camps = [...new Set(LINEAS.map((l) => l.campana))].filter(ok).sort((a, b) => a - b);
+  const xs = camps.map((cc) => realDe(cc, id));
+  const enCurso = (cc) => CU.campanaAbierta(cc, hoy) && hoy >= (cc - 1) + '-11-01';
+  const iAbierta = camps.map(enCurso).lastIndexOf(true);
+  const presAb = iAbierta >= 0 ? presDe(camps[iAbierta], id) : null;
+  const etC = camps.map((cc) => String(cc));
+  const dest = camps.indexOf(c);
+  const ch = (f) => { const idc = 'ch' + dashCharts.length; dashCharts.push({ id: idc, f }); return `<div class="chart" id="${idc}"></div>`; };
+  const evo = `<section class="vcard"><h3>Evolución por campaña</h3><p class="vsub">${esc(nombreFinca(id))} · lo real de cada campaña${presAb ? `; ${camps[iAbierta]} va en curso y su contorno es el presupuesto` : ''}</p>
+      ${ch((W) => svgBarras(W, { cats: etC, destacar: dest, series: [{ nombre: 'Ingresos', vals: xs.map((x) => (x ? x.ingresos : null)), cls: 's1' }, { nombre: 'Gastos', vals: xs.map((x) => (x ? x.gastos : null)), cls: 's2' }], fantasma: presAb ? { i: iAbierta, vals: [presAb.ingresos, presAb.gastos] } : null }))}
+      ${leyenda([['s1', 'Ingresos'], ['s2', 'Gastos']])}
+      <h4>Resultado</h4>
+      ${ch((W) => svgBarras(W, { cats: etC, destacar: dest, etiquetar: true, series: [{ nombre: 'Resultado', vals: xs.map((x) => (x ? x.resultado : null)), cls: 's1', signo: true }], fantasma: presAb ? { i: iAbierta, vals: [presAb.resultado] } : null }))}
+      <h4>Precio de venta y coste de producción (€/kg)</h4>
+      ${ch((W) => svgLineas(W, { etiquetas: etC, fmt: (v) => nf(v, 3, 3) + ' €/kg', series: [{ nombre: 'Precio medio', vals: xs.map((x, i) => (x && x.kg > 0 && i !== iAbierta ? x.precio : null)), cls: 's1' }, { nombre: 'Coste sin arrendamiento', vals: xs.map((x, i) => (x && x.kg > 0 && i !== iAbierta ? x.coste_prod : null)), cls: 's2' }], ax: (v) => nf(v, 2, 2) }))}
+      ${leyenda([['s1', 'Precio medio'], ['s2', 'Coste de producción sin arrendamiento']])}
+      ${iAbierta >= 0 ? `<p class="small" style="margin:2px 0 0">Sin ${camps[iAbierta]}: hasta que entre la cosecha el €/kg no es comparable.</p>` : ''}
+      <h4>Producción (kg/ha)</h4>
+      ${ok(pf(id).ha) ? ch((W) => svgBarras(W, { cats: etC, destacar: dest, etiquetar: true, fmt: (v) => nf(v, 0, 0) + ' kg/ha', series: [{ nombre: 'kg/ha', vals: xs.map((x) => (x && x.kg > 0 ? x.kg_ha : null)), cls: 's1' }], fantasma: presAb && ok(presAb.kg_ha) ? { i: iAbierta, vals: [presAb.kg_ha] } : null })) : '<p class="small">Falta la superficie en el Maestro de fincas.</p>'}
+    </section>`;
+  // 3 · Ranking de fincas
+  const m = RMET[ui.rmet] || RMET.resultado;
+  const filas = FINCAS.map((f) => { const x = ui.modo === 'real' ? realDe(c, f.id) : presDe(c, f.id); return { nombre: f.nombre, v: x ? m.f(x, f) : null, sub: x ? m.sub : (ui.modo === 'real' ? 'sin líneas' : 'sin presupuesto'), marcada: id === '__all' || id === f.id }; });
+  filas.sort((a, b) => (ok(a.v) ? (ok(b.v) ? (m.desc ? b.v - a.v : a.v - b.v) : -1) : ok(b.v) ? 1 : 0));
+  const rank = `<section class="vcard"><h3>Ranking de fincas · ${c}</h3><p class="vsub">De mejor a peor${m.desc ? '' : ' (menos coste es mejor)'}${ui.modo === 'real' && CU.campanaAbierta(c, hoy) ? ' · campaña en curso: lo real hasta hoy' : ''}</p>
+      <div class="seg" id="dModo"><button data-m="real" aria-pressed="${ui.modo === 'real'}">Real</button><button data-m="pres" aria-pressed="${ui.modo === 'pres'}">Presupuesto</button></div>
+      <div class="chips" id="dMet">${Object.entries(RMET).map(([k, r]) => `<button class="chip" data-r="${k}" aria-pressed="${ui.rmet === k}">${esc(r.label)}</button>`).join('')}</div>
+      ${ch((W) => svgRanking(W, filas, m.fmt))}</section>`;
+  $('#view').innerHTML = `
+    <div class="sel">
+      <select id="dCamp" aria-label="Campaña">${campOpts(c)}</select>
+      <select id="dFinca" aria-label="Finca">${fincaOpts(id, true)}</select>
+    </div>
+    ${aviso}
+    <div class="dgrid">
+      ${bloqueRitmo('cultivo', `Gasto de cultivo · ${c}`, 'Gastos y tareas sin arrendamiento ni recolección, acumulado mes a mes', presCultivo)}
+      ${bloqueRitmo('ingresos', `Ingresos · ${c}`, 'Cosecha, subvenciones y otros ingresos, acumulado mes a mes', pres ? pres.ingresos : null)}
+      ${evo}
+      ${rank}
+    </div>
+    <p class="legend">Toca un gráfico para ver los valores. El punto hueco marca dónde iba ${c - 1} a la misma fecha. Mismas cuentas que la pestaña Resultados (mano de obra propia a ${nf(PARAM.moEurH, 0, 2)} €/h).</p>
+    <div id="vizTip" class="viztip" hidden></div>`;
+  drawCharts();
+  $('#dCamp').onchange = (e) => { ui.camp = Number(e.target.value); saveUi(); renderAll(); };
+  $('#dFinca').onchange = (e) => { ui.finca = e.target.value; saveUi(); renderAll(); };
+  $('#dModo').onclick = (e) => { const b = e.target.closest('[data-m]'); if (b) { ui.modo = b.dataset.m; saveUi(); renderAll(); } };
+  $('#dMet').onclick = (e) => { const b = e.target.closest('[data-r]'); if (b) { ui.rmet = b.dataset.r; saveUi(); renderAll(); } };
+  const v = $('#view');
+  v.onpointermove = onTip; v.onpointerdown = onTip;
+  v.onpointerleave = () => { const t = $('#vizTip'); if (t) t.hidden = true; document.querySelectorAll('.viz .col.on').forEach((x) => x.classList.remove('on')); };
+  bindAviso();
+}
+function drawCharts() {
+  for (const d of dashCharts) { const el = document.getElementById(d.id); if (el) el.innerHTML = d.f(Math.max(260, Math.floor(el.clientWidth))); }
+}
+function headDashboard() { return kpis(realDe(ui.camp, ui.finca), `real ${ui.camp}`) + presLine(presDe(ui.camp, ui.finca), ui.camp); }
+let rsTimer;
+window.addEventListener('resize', () => { clearTimeout(rsTimer); rsTimer = setTimeout(() => { if (ui.tab === 'dashboard') drawCharts(); }, 200); });
+
 /* ---------- Pestaña: Resultados (como la pestaña del Excel) ---------- */
 function celda(v, tipo, cls, drill) {
   const neg = ok(v) && v < 0 ? ' neg' : '';
@@ -385,6 +586,10 @@ function renderPresupuesto() {
       <button class="btn" id="pFillReal" ${prevReal ? '' : 'disabled'}>Rellenar con lo real ${c - 1}</button>
       <button class="btn" id="pFillPres" ${prevPres ? '' : 'disabled'}>Copiar presupuesto ${c - 1}</button>
     </div>
+    <div class="actions" style="margin:0 0 10px">
+      <button class="btn primary" id="pAjuste" ${LINEAS.some((l) => l.campana === c) ? '' : 'disabled'}>Ajustar a lo real ${c}</button>
+      ${ultimoAjuste && ultimoAjuste.camp === c ? `<button class="btn" id="pDeshacer">Deshacer el último ajuste (${ultimoAjuste.items.length} ${ultimoAjuste.items.length === 1 ? 'casilla' : 'casillas'} · ${new Date(ultimoAjuste.fecha).toLocaleDateString('es-ES')})</button>` : ''}
+    </div>
     <div class="pform">${filas}
       <label class="pfila arr"><span class="t">Arrendamiento<small>Estimado: <span id="pArrEstV">${eur0(x.arrendamiento_estimado)}</span> (${esc(reglaTxt)})${manual ? ' · escrito a mano · <button type="button" class="linkbtn" id="pArrEst">usar el estimado</button>' : ''}</small></span>
         <input type="text" inputmode="decimal" data-k="arrendamiento" value="${esc(fmtIn(b.arrendamiento))}" placeholder="${esc(fmtIn(Math.round(x.arrendamiento_estimado)))}" autocomplete="off"></label>
@@ -406,7 +611,100 @@ function renderPresupuesto() {
   const est = $('#pArrEst'); if (est) est.onclick = (e) => { e.preventDefault(); setPres(c, id, { arrendamiento: null }); toast('Arrendamiento estimado con la regla'); };
   $('#pFillReal').onclick = () => fillFrom(c, id, prevReal, 'lo real');
   $('#pFillPres').onclick = () => fillFrom(c, id, prevPres, 'el presupuesto');
+  $('#pAjuste').onclick = () => openAjuste(c);
+  const dh = $('#pDeshacer'); if (dh) dh.onclick = deshacerAjuste;
   bindAviso();
+}
+
+/* ---------- Ajustar a lo real: iguala las líneas del presupuesto que lo real ya ha superado ---------- */
+const AJ_LABEL = { cosecha: 'Cosecha (kg × precio)', arrendamiento: 'Arrendamiento', ...Object.fromEntries(CU.ENTRADAS.map((e) => [e.k, e.label])) };
+const hoyISO = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+function ajTexto(cb) {
+  if (cb.k === 'cosecha') {
+    const p = cb.previos, v = cb.valores;
+    const kgDe = ok(p.kg) ? p.kg : 0, kgA = 'kg' in v ? v.kg : kgDe;
+    const prDe = ok(p.precio) ? p.precio : 0, prA = 'precio' in v ? v.precio : prDe;
+    return { de: `${nf(kgDe)} kg × ${nf(prDe, 3, 3)}`, a: `${nf(kgA)} kg × ${nf(prA, 3, 3)}`, real: `real: ${nf(cb.realKg || 0)} kg · ${eur0(cb.real || 0)}` };
+  }
+  const k = Object.keys(cb.valores)[0];
+  const de = cb.k === 'arrendamiento' && cb.deEstimado ? `${eur0(cb.presupuestado)} (estimado)` : ok(cb.previos[k]) ? eur0(cb.previos[k]) : 'vacío';
+  return { de, a: eur0(cb.valores[k]), real: `real: ${eur(cb.real)}` };
+}
+function openAjuste(c) {
+  const ids = [ui.pfinca, ...FINCAS.map((f) => f.id).filter((i) => i !== ui.pfinca)];
+  const bloques = [];
+  for (const id of ids) {
+    const x = realDe(c, id); if (!x) continue;
+    const b = PRES[c + '|' + id] || {};
+    const aj = CU.ajusteReal(b, x, pf(id), PARAM.reglas[id]);
+    if (aj.cambios.length) bloques.push({ id, b, x, aj });
+  }
+  const cerrada = !CU.campanaAbierta(c, hoyISO());
+  const html = !bloques.length ? `<p class="empty">Ninguna línea del presupuesto ${c} está por debajo de lo real. No hay nada que ajustar.</p>` : `
+    <p class="small" style="margin-top:0">Líneas del presupuesto ${c} que lo real ya ha superado. Al ajustarlas pasan a valer lo real (redondeado al euro); las que siguen por debajo no se tocan. Marca las que quieras.</p>
+    ${cerrada ? `<p class="hint warn" style="margin:0 0 12px">La campaña ${c} ya está cerrada: si la ajustas, su presupuesto quedará igual que lo real y dejará de servir para comparar.</p>` : ''}
+    ${bloques.map((bl) => `
+      <div class="ajf" data-f="${esc(bl.id)}">
+        <label class="ajh"><input type="checkbox" class="ajall" ${bl.aj.sinPresupuesto ? '' : 'checked'}> <b>${esc(nombreFinca(bl.id))}</b>${bl.aj.sinPresupuesto ? ' <span class="pill">sin presupuesto: se crearía con lo real</span>' : ''}</label>
+        ${bl.aj.cambios.map((cb) => { const t = ajTexto(cb); return `
+          <label class="ajl"><input type="checkbox" data-k="${cb.k}" ${bl.aj.sinPresupuesto ? '' : 'checked'}>
+            <span class="t">${esc(AJ_LABEL[cb.k] || cb.k)}<small>${esc(t.real)}</small></span>
+            <span class="v">${esc(t.de)} → <b>${esc(t.a)}</b></span></label>`; }).join('')}
+        <p class="ajr small"></p>
+      </div>`).join('')}
+    <div class="actions"><button class="btn primary" id="ajGo">Ajustar</button></div>
+    <p class="hint" style="margin-top:8px">Después podrás deshacerlo con «Deshacer el último ajuste».</p>`;
+  const body = openSheet(`Ajustar a lo real · ${c}`, html);
+  if (!bloques.length) return;
+  const elegidos = (el) => [...el.querySelectorAll('input[data-k]:checked')].map((i) => i.dataset.k);
+  const resumen = () => {
+    let n = 0;
+    for (const bl of bloques) {
+      const el = body.querySelector(`.ajf[data-f="${CSS.escape(bl.id)}"]`);
+      const sel = elegidos(el);
+      const nb = CU.aplicarAjuste(bl.b, bl.aj.cambios, sel);
+      if (sel.includes('arrendamiento')) { const arr = CU.arrendamientoTras(bl.b, sel, bl.aj.cambios, bl.x, pf(bl.id), PARAM.reglas[bl.id]); if (arr) nb.arrendamiento = arr.valores.arrendamiento; }
+      const antes = CU.presupuesto(Object.keys(bl.b).length ? bl.b : { kg: 0 }, pf(bl.id), PARAM.reglas[bl.id]);
+      const desp = CU.presupuesto(Object.keys(nb).length ? nb : { kg: 0 }, pf(bl.id), PARAM.reglas[bl.id]);
+      el.querySelector('.ajall').checked = sel.length === bl.aj.cambios.length;
+      el.querySelector('.ajall').indeterminate = sel.length > 0 && sel.length < bl.aj.cambios.length;
+      el.querySelector('.ajr').innerHTML = sel.length ? `Resultado presupuestado: ${eur0(antes.resultado)} → <b class="${desp.resultado < 0 ? 'neg' : ''}">${eur0(desp.resultado)}</b> · gastos ${eur0(antes.gastos)} → ${eur0(desp.gastos)}` : 'Sin cambios en esta finca';
+      n += sel.length;
+    }
+    const go = $('#ajGo', body); go.disabled = !n; go.textContent = n ? `Ajustar ${n} ${n === 1 ? 'línea' : 'líneas'}` : 'Marca alguna línea';
+  };
+  body.addEventListener('change', (e) => {
+    const all = e.target.closest('.ajall');
+    if (all) all.closest('.ajf').querySelectorAll('input[data-k]').forEach((i) => { i.checked = all.checked; });
+    resumen();
+  });
+  resumen();
+  $('#ajGo', body).onclick = () => {
+    const lista = [], items = [];
+    for (const bl of bloques) {
+      const el = body.querySelector(`.ajf[data-f="${CSS.escape(bl.id)}"]`);
+      const sel = elegidos(el);
+      const cambios = bl.aj.cambios.filter((cb) => cb.k !== 'arrendamiento' && sel.includes(cb.k));
+      if (sel.includes('arrendamiento')) { const arr = CU.arrendamientoTras(bl.b, sel, bl.aj.cambios, bl.x, pf(bl.id), PARAM.reglas[bl.id]); if (arr) cambios.push(arr); }
+      for (const cb of cambios) for (const [k, v] of Object.entries(cb.valores)) {
+        lista.push({ camp: c, id: bl.id, k, v });
+        items.push({ fincaId: bl.id, concepto: k, previo: ok(cb.previos[k]) ? cb.previos[k] : null });
+      }
+    }
+    if (!lista.length) return;
+    ultimoAjuste = { camp: c, fecha: new Date().toISOString(), items };
+    save('ajuste', ultimoAjuste);
+    closeSheet();
+    setPresVarios(lista);
+    toast(`Ajustadas ${items.length} ${items.length === 1 ? 'casilla' : 'casillas'} a lo real`);
+  };
+}
+function deshacerAjuste() {
+  const a = ultimoAjuste; if (!a) return;
+  if (!confirm(`¿Volver a dejar las ${a.items.length} casillas como estaban antes del ajuste del ${new Date(a.fecha).toLocaleDateString('es-ES')}?`)) return;
+  ultimoAjuste = null; save('ajuste', null);
+  setPresVarios(a.items.map((it) => ({ camp: a.camp, id: it.fincaId, k: it.concepto, v: it.previo })));
+  toast('Ajuste deshecho');
 }
 /* Resumen en vivo con lo que hay escrito en el formulario */
 function drawPSum() {
@@ -420,15 +718,22 @@ function drawPSum() {
     <div><span><b>Resultado</b></span><b class="${x.resultado < 0 ? 'neg' : ''}">${eur0(x.resultado)}${ok(x.margen) ? ` · ${nf(x.margen * 100, 1, 1)} %` : ''}</b></div>`;
 }
 const DESC = Object.fromEntries(CU.ENTRADAS.map((e) => [e.k, e.label]));
+function anotarCambio(camp, id, k, v, ts) {
+  const actual = PRES[camp + '|' + id] || {};
+  if ((v === null && !ok(actual[k])) || (ok(v) && actual[k] === v)) return;
+  pend.cambios = pend.cambios.filter((x) => !(x.campana === camp && x.fincaId === id && x.concepto === k));
+  pend.cambios.push({ campana: camp, fincaId: id, finca: nombreFinca(id), concepto: k, descripcion: DESC[k] || k, valor: v, ts });
+}
 function setPres(camp, id, valores, redibujar = true) {
   const ts = new Date().toISOString();
-  const actual = PRES[camp + '|' + id] || {};
-  for (const [k, v] of Object.entries(valores)) {
-    if ((v === null && !ok(actual[k])) || (ok(v) && actual[k] === v)) continue;
-    pend.cambios = pend.cambios.filter((x) => !(x.campana === camp && x.fincaId === id && x.concepto === k));
-    pend.cambios.push({ campana: camp, fincaId: id, finca: nombreFinca(id), concepto: k, descripcion: DESC[k] || k, valor: v, ts });
-  }
+  for (const [k, v] of Object.entries(valores)) anotarCambio(camp, id, k, v, ts);
   save('pend', pend); build(); if (redibujar) renderAll(); else renderStatus(); scheduleSync();
+}
+/* Varias fincas a la vez (ajuste a lo real y deshacer). lista: [{ camp, id, k, v }] */
+function setPresVarios(lista) {
+  const ts = new Date().toISOString();
+  for (const c of lista) anotarCambio(c.camp, c.id, c.k, c.v, ts);
+  save('pend', pend); build(); renderAll(); scheduleSync();
 }
 function fillFrom(camp, id, x, que) {
   if (!x) return;
@@ -539,6 +844,7 @@ function drawFincas(box) {
 
 /* ---------- Render general ---------- */
 const TABS = {
+  dashboard: { title: 'Dashboard', head: headDashboard, render: renderDashboard },
   resultados: { title: 'Cuenta de resultados', head: headResultados, render: renderResultados },
   fincas: { title: 'Comparar fincas', head: headFincas, render: renderFincas },
   presupuesto: { title: 'Presupuesto', head: headPresupuesto, render: renderPresupuesto },
@@ -551,18 +857,21 @@ function renderAll() {
   renderStatus();
   t.render();
 }
-function saveUi() { save('ui', { tab: ui.tab, camp: ui.camp, finca: ui.finca, modo: ui.modo, pcamp: ui.pcamp, pfinca: ui.pfinca }); }
+function saveUi() { save('ui', { v: 2, tab: ui.tab, camp: ui.camp, finca: ui.finca, modo: ui.modo, pcamp: ui.pcamp, pfinca: ui.pfinca, rmet: ui.rmet }); }
 
 async function init() {
   document.querySelectorAll('.tab').forEach((b) => b.onclick = () => { ui.tab = b.dataset.tab; saveUi(); window.scrollTo(0, 0); renderAll(); });
   $('#btnSettings').onclick = openSettings;
   $('#syncStatus').onclick = openSettings;
   try {
-    const [c, d, p, u] = await Promise.all([dbGet('conn'), dbGet('datos'), dbGet('pend'), dbGet('ui')]);
+    const [c, d, p, u, aj] = await Promise.all([dbGet('conn'), dbGet('datos'), dbGet('pend'), dbGet('ui'), dbGet('ajuste')]);
     if (c) conn = { ...conn, ...c };
     if (d) datos = d;
     if (p) pend = { cambios: Array.isArray(p.cambios) ? p.cambios : [], param: p.param || null };
     if (u) Object.assign(ui, u);
+    if (!u || u.v !== 2) ui.tab = 'dashboard'; // v1.2.0: la primera vez se abre en el Dashboard nuevo
+    if (!TABS[ui.tab]) ui.tab = 'dashboard';
+    if (aj && Array.isArray(aj.items)) ultimoAjuste = aj;
   } catch (_) { toast('Este navegador no deja guardar datos: no funcionará sin conexión', true); }
   build();
   renderAll();

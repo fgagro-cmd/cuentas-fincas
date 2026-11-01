@@ -2,9 +2,11 @@
 
 App para el móvil y el ordenador con la cuenta de resultados y los presupuestos de mis fincas propias. Sustituye a las pestañas «Presupuesto y resultados» del Excel Gestion_de_fincas_3.0. Funciona sin conexión con los últimos datos leídos.
 
+- **Dashboard** (primera pestaña, desde la v1.2.0): por campaña y finca (o explotación). Ritmo de la campaña: gasto de cultivo (sin arrendamiento ni recolección) e ingresos acumulados mes a mes frente a la campaña anterior a la misma fecha, con la línea del presupuesto. Evolución por campaña: ingresos y gastos, resultado, precio medio y coste de producción (€/kg, sin la campaña en curso) y kg/ha; la campaña en curso lleva el presupuesto como contorno. Ranking de fincas por resultado, margen, €/ha, coste €/kg o kg/ha, en real o en presupuesto. Toca un gráfico para ver los valores.
 - **Resultados:** como la pestaña del Excel, por campaña y finca (o la explotación completa). Columnas: las dos campañas anteriores, presupuesto, real y % de variación. Filas: ingresos, gastos por tipo, balance y otros indicadores. Toca una cifra para ver las líneas que la forman.
 - **Fincas:** una campaña con todas las fincas una al lado de otra, en real o en presupuesto.
 - **Presupuesto:** por finca y campaña. Se guarda solo al cambiar cada cifra. El arrendamiento se estima con la regla de cada finca y se puede escribir a mano. Botones para rellenar con lo real o copiar el presupuesto de la campaña anterior.
+  - **Ajustar a lo real** (v1.2.0): iguala a lo real las líneas del presupuesto de la campaña que lo real ya ha superado (redondeado al euro); las que siguen por debajo no se tocan. Muestra por finca qué cambia (de → a) y el resultado presupuestado antes y después; se marcan las que se quieran. Cosecha: kg reales si son más, y precio subido si el ingreso real de cosecha ya pasa de kg × precio. Arrendamiento: si ya hay algo pagado y supera lo presupuestado (escrito o estimado), se escribe lo pagado. Las fincas sin presupuesto salen desmarcadas. «Deshacer el último ajuste» deja las casillas como estaban.
 
 ## De dónde salen los datos
 - **Líneas:** pestaña «Tabla principal» de la hoja de Google de Gestión fincas (la escribe la app Gestión fincas: histórico del Excel + lo que anotas).

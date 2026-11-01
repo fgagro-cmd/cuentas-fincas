@@ -213,6 +213,91 @@
     return 1 - ((a + b) / 2) / real;
   }
 
-  const api = { SECCIONES, FILAS, ENTRADAS, BASES, FILTRO, real, presupuesto, sumar, variacion, arrendamientoEstimado, lineasConcepto, r2 };
+  /* ---------- Ajustar el presupuesto a lo real (v1.2.0) ----------
+     Solo sube las líneas que lo real ya ha superado; las que siguen por debajo no se tocan.
+     Grupos: cada concepto de dinero por separado, «cosecha» (kg y precio juntos) y el arrendamiento.
+     Devuelve { cambios: [{ k, valores: {concepto: nuevo}, previos: {concepto: anterior|null}, real }], sinPresupuesto } */
+  const AJ_DINERO = ['subvenciones', 'otros_ingresos', 'fertilizantes', 'fitosanitarios', 'agua', 'seguro', 'resto', 'tratamientos', 'poda', 'recoleccion', 'desbroce', 'otras_tareas', 'trituracion', 'otros_gastos'];
+  const okv = (n) => n !== null && n !== undefined && n !== '' && isFinite(n);
+  function ajusteReal(b, x, p, regla) {
+    b = b || {};
+    const sinPresupuesto = !Object.keys(b).some((k) => okv(b[k]));
+    const cambios = [];
+    if (!x) return { cambios, sinPresupuesto };
+    const val = (k) => (okv(b[k]) ? Number(b[k]) : 0);
+    const prev = (k) => (okv(b[k]) ? Number(b[k]) : null);
+    for (const k of AJ_DINERO) {
+      if ((x[k] || 0) > val(k) + 0.5) cambios.push({ k, valores: { [k]: Math.round(x[k]) }, previos: { [k]: prev(k) }, real: x[k] });
+    }
+    // Cosecha = kg × precio: kg reales si son más, y precio subido si el ingreso real de cosecha ya pasa de kg × precio
+    const kgN = (x.kg || 0) > val('kg') + 0.5 ? Math.round(x.kg) : val('kg');
+    const precioN = kgN > 0 && (x.cosecha || 0) > kgN * val('precio') + 0.5 ? Math.ceil((x.cosecha / kgN) * 1000) / 1000 : val('precio');
+    if (kgN !== val('kg') || precioN !== val('precio')) {
+      const valores = {}, previos = {};
+      if (kgN !== val('kg')) { valores.kg = kgN; previos.kg = prev('kg'); }
+      if (precioN !== val('precio')) { valores.precio = precioN; previos.precio = prev('precio'); }
+      cambios.push({ k: 'cosecha', valores, previos, real: x.cosecha, realKg: x.kg });
+    }
+    // Arrendamiento: si ya hay algo pagado y pasa del presupuestado (escrito o estimado con la regla), se escribe lo pagado
+    const arr = arrendamientoTras(b, cambios.map((c) => c.k), cambios, x, p, regla);
+    if (arr) cambios.push(arr);
+    return { cambios, sinPresupuesto };
+  }
+  /* Presupuesto tras aplicar los grupos elegidos (sin el arrendamiento). */
+  function aplicarAjuste(b, cambios, elegidos) {
+    const nb = { ...(b || {}) };
+    for (const c of cambios) if (c.k !== 'arrendamiento' && elegidos.includes(c.k)) Object.assign(nb, c.valores);
+    return nb;
+  }
+  function arrendamientoTras(b, elegidos, cambios, x, p, regla) {
+    if (!x) return null;
+    const nb = aplicarAjuste(b, cambios, elegidos);
+    const xp = presupuesto(Object.keys(nb).length ? nb : { kg: 0 }, p, regla);
+    if ((x.arrendamiento || 0) > 0 && x.arrendamiento > xp.arrendamiento + 0.5) {
+      return { k: 'arrendamiento', valores: { arrendamiento: Math.round(x.arrendamiento) }, previos: { arrendamiento: okv(b && b.arrendamiento) ? Number(b.arrendamiento) : null }, real: x.arrendamiento, deEstimado: !okv(b && b.arrendamiento), presupuestado: xp.arrendamiento };
+    }
+    return null;
+  }
+
+  /* ---------- Ritmo de la campaña (v1.2.0) ----------
+     Acumulado mes a mes de la campaña y de la anterior, con «la misma fecha» (mismo día y mes un año antes).
+     cual: 'cultivo' = gastos sin arrendamiento ni recolección; 'ingresos'.
+     Meses: desplazamiento respecto a enero del año de la campaña (−2 = noviembre del año anterior). */
+  const ES_CULTIVO = (l) => (l.categoria === 'Gasto' && l.tipo !== 'Arrendamiento') || (l.categoria === 'Tarea' && l.tipo !== 'Recolección');
+  const ES_INGRESO = (l) => l.categoria === 'Ingreso';
+  const mesDe = (fecha) => Number(String(fecha).slice(0, 4)) * 12 + Number(String(fecha).slice(5, 7)) - 1;
+  const menosUnAno = (iso) => (Number(iso.slice(0, 4)) - 1) + iso.slice(4, 10);
+  function campanaAbierta(c, hoy) { return hoy < (c + 1) + '-10-01'; }
+  function ritmo(lineas, c, finca, cual, hoy) {
+    const f = cual === 'ingresos' ? ES_INGRESO : ES_CULTIVO;
+    const abierta = campanaAbierta(c, hoy) && hoy >= (c - 1) + '-11-01';
+    const corte = abierta ? hoy : null, cortePrev = abierta ? menosUnAno(hoy) : null;
+    const porMes = (camp, hasta) => {
+      const m = new Map(); let tot = 0;
+      for (const l of lineas) {
+        if (l.campana !== camp || (finca != null && l.finca !== finca) || !f(l) || !l.fecha) continue;
+        if (hasta && l.fecha > hasta) continue;
+        const off = Math.max(-3, Math.min(20, mesDe(l.fecha) - camp * 12));
+        m.set(off, (m.get(off) || 0) + l.importe); tot += l.importe;
+      }
+      return { m, tot };
+    };
+    const cur = porMes(c, corte), prv = porMes(c - 1, null), prvMisma = cortePrev ? porMes(c - 1, cortePrev).tot : prv.tot;
+    const hoyOff = abierta ? mesDe(hoy) - c * 12 : null;
+    const offs = [...cur.m.keys(), ...prv.m.keys()];
+    if (hoyOff !== null) offs.push(hoyOff);
+    let a = offs.length ? Math.min(...offs, 0) : 0, z = offs.length ? Math.max(...offs, 11) : 11;
+    const meses = [], vc = [], vp = [];
+    let sc = 0, sp = 0;
+    const finCur = hoyOff !== null ? hoyOff : Math.max(...[...cur.m.keys(), a]);
+    for (let o = a; o <= z; o++) {
+      meses.push(o);
+      sc += cur.m.get(o) || 0; sp += prv.m.get(o) || 0;
+      vc.push(o <= finCur ? sc : null); vp.push(sp);
+    }
+    return { meses, cur: vc, prev: vp, curTot: cur.tot, prevMisma: prvMisma, prevTotal: prv.tot, abierta, hoyOff };
+  }
+
+  const api = { SECCIONES, FILAS, ENTRADAS, BASES, FILTRO, real, presupuesto, sumar, variacion, arrendamientoEstimado, lineasConcepto, r2, ajusteReal, aplicarAjuste, arrendamientoTras, ritmo, campanaAbierta };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.CU = api;
 })(typeof window !== 'undefined' ? window : globalThis);
