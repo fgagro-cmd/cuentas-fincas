@@ -21,6 +21,7 @@
       { k: 'fertilizantes', label: 'Fertilizantes', nota: 'con bioestimulantes' },
       { k: 'fitosanitarios', label: 'Fitosanitarios', nota: 'con herbicidas' },
       { k: 'agua', label: 'Agua de riego' },
+      { k: 'seguro', label: 'Seguro' },
       { k: 'resto', label: 'Resto', nota: 'combustible, material de riego y enmiendas' },
       { k: 'insumos', label: 'Gasto en insumos', total: true },
       { k: 'tratamientos', label: 'Tratamientos fitosanitarios', nota: 'fumigación y herbicida' },
@@ -66,6 +67,7 @@
     { k: 'fertilizantes', label: 'Fertilizantes (con bioestimulantes)' },
     { k: 'fitosanitarios', label: 'Fitosanitarios (con herbicidas)' },
     { k: 'agua', label: 'Agua de riego' },
+    { k: 'seguro', label: 'Seguro' },
     { k: 'resto', label: 'Resto de insumos' },
     { k: 'tratamientos', label: 'Tratamientos fitosanitarios' },
     { k: 'poda', label: 'Poda' },
@@ -78,11 +80,13 @@
   ];
 
   /* Reglas de arrendamiento (el porcentaje y la base de cada finca están en la pestaña Parámetros). */
+  // «insumos» en las reglas = sin el seguro: así el arrendamiento estimado no cambia al pasar el seguro de «Otros gastos» a insumos.
+  const insSinSeguro = (x) => x.insumos - (x.seguro || 0);
   const BASES = {
     ninguno: { label: 'Sin arrendamiento (en propiedad)', f: () => 0 },
-    'cosecha-recoleccion-insumos-poda': { label: '% de (cosecha − recolección − insumos − poda)', f: (x) => x.cosecha - x.recoleccion - x.insumos - x.poda },
+    'cosecha-recoleccion-insumos-poda': { label: '% de (cosecha − recolección − insumos − poda)', f: (x) => x.cosecha - x.recoleccion - insSinSeguro(x) - x.poda },
     'cosecha-recoleccion': { label: '% de (cosecha − recolección)', f: (x) => x.cosecha - x.recoleccion },
-    'ingresos-insumos-mocontratada': { label: '% de (ingresos − insumos − mano de obra contratada)', f: (x) => x.ingresos - x.insumos - x.mo_contratada },
+    'ingresos-insumos-mocontratada': { label: '% de (ingresos − insumos − mano de obra contratada)', f: (x) => x.ingresos - insSinSeguro(x) - x.mo_contratada },
   };
   function arrendamientoEstimado(x, regla) {
     if (!regla || !BASES[regla.base] || !(regla.pct > 0)) return 0;
@@ -119,8 +123,9 @@
     fertilizantes: (l) => enLista(l, 'Gasto', ['Fertilizantes', 'Bioestimulantes']),
     fitosanitarios: (l) => enLista(l, 'Gasto', ['Fitosanitarios', 'Herbicidas']),
     agua: (l) => enLista(l, 'Gasto', ['Agua de riego']),
+    seguro: (l) => enLista(l, 'Gasto', ['Seguro']),
     resto: (l) => enLista(l, 'Gasto', ['Combustible', 'Material de riego', 'Enmienda orgánica']),
-    insumos: (l) => enLista(l, 'Gasto', ['Fertilizantes', 'Bioestimulantes', 'Fitosanitarios', 'Herbicidas', 'Agua de riego', 'Combustible', 'Material de riego', 'Enmienda orgánica']),
+    insumos: (l) => enLista(l, 'Gasto', ['Fertilizantes', 'Bioestimulantes', 'Fitosanitarios', 'Herbicidas', 'Agua de riego', 'Seguro', 'Combustible', 'Material de riego', 'Enmienda orgánica']),
     tratamientos: (l) => enLista(l, 'Tarea', ['Fumigación', 'Herbicida']),
     poda: (l) => enLista(l, 'Tarea', ['Poda']),
     recoleccion: (l) => enLista(l, 'Tarea', ['Recolección']),
@@ -149,10 +154,10 @@
     const L = lineasDe(lineas, campana, finca);
     const imp = (k) => L.reduce((t, l) => t + (FILTRO[k](l) ? l.importe : 0), 0);
     const x = { n: L.length };
-    for (const k of ['cosecha', 'subvenciones', 'otros_ingresos', 'fertilizantes', 'fitosanitarios', 'agua', 'resto', 'tratamientos', 'poda', 'recoleccion', 'desbroce', 'otras_tareas', 'arrendamiento', 'otros_gastos', 'trituracion', 'mejoras', 'mo_contratada']) x[k] = imp(k);
+    for (const k of ['cosecha', 'subvenciones', 'otros_ingresos', 'fertilizantes', 'fitosanitarios', 'agua', 'seguro', 'resto', 'tratamientos', 'poda', 'recoleccion', 'desbroce', 'otras_tareas', 'arrendamiento', 'otros_gastos', 'trituracion', 'mejoras', 'mo_contratada']) x[k] = imp(k);
     x.kg = L.reduce((t, l) => t + (FILTRO.kg(l) ? l.cantidad : 0), 0);
     x.ingresos = x.cosecha + x.subvenciones + x.otros_ingresos;
-    x.insumos = x.fertilizantes + x.fitosanitarios + x.agua + x.resto;
+    x.insumos = x.fertilizantes + x.fitosanitarios + x.agua + x.seguro + x.resto;
     x.tareas = L.reduce((t, l) => t + (l.categoria === 'Tarea' ? l.importe : 0), 0);
     x.gastos = x.insumos + x.tareas + x.arrendamiento + x.otros_gastos;
     x.resultado = x.ingresos - x.gastos;
@@ -176,8 +181,8 @@
     x.cosecha = x.kg * v('precio');
     x.subvenciones = v('subvenciones'); x.otros_ingresos = v('otros_ingresos');
     x.ingresos = x.cosecha + x.subvenciones + x.otros_ingresos;
-    for (const k of ['fertilizantes', 'fitosanitarios', 'agua', 'resto', 'tratamientos', 'poda', 'recoleccion', 'desbroce', 'otras_tareas', 'otros_gastos', 'trituracion']) x[k] = v(k);
-    x.insumos = x.fertilizantes + x.fitosanitarios + x.agua + x.resto;
+    for (const k of ['fertilizantes', 'fitosanitarios', 'agua', 'seguro', 'resto', 'tratamientos', 'poda', 'recoleccion', 'desbroce', 'otras_tareas', 'otros_gastos', 'trituracion']) x[k] = v(k);
+    x.insumos = x.fertilizantes + x.fitosanitarios + x.agua + x.seguro + x.resto;
     x.tareas = x.tratamientos + x.poda + x.recoleccion + x.desbroce + x.otras_tareas;
     x.mo_contratada = x.poda + x.recoleccion;               // reglas de estimación del Excel
     x.arrendamiento_estimado = arrendamientoEstimado(x, regla);
@@ -194,7 +199,7 @@
   }
 
   /* Suma de varias fincas (explotación completa): las cantidades se suman y los cocientes se recalculan. */
-  const SUMABLES = ['kg', 'cosecha', 'subvenciones', 'otros_ingresos', 'ingresos', 'fertilizantes', 'fitosanitarios', 'agua', 'resto', 'insumos', 'tratamientos', 'poda', 'recoleccion', 'desbroce', 'otras_tareas', 'tareas', 'arrendamiento', 'otros_gastos', 'gastos', 'resultado', 'trituracion', 'mejoras', 'mo_contratada', 'mo_propia', 'amortizacion', 'benef_mo', 'benef_mo_maq'];
+  const SUMABLES = ['kg', 'cosecha', 'subvenciones', 'otros_ingresos', 'ingresos', 'fertilizantes', 'fitosanitarios', 'agua', 'seguro', 'resto', 'insumos', 'tratamientos', 'poda', 'recoleccion', 'desbroce', 'otras_tareas', 'tareas', 'arrendamiento', 'otros_gastos', 'gastos', 'resultado', 'trituracion', 'mejoras', 'mo_contratada', 'mo_propia', 'amortizacion', 'benef_mo', 'benef_mo_maq'];
   function sumar(lista, ha, arboles) {
     const xs = lista.filter(Boolean);
     if (!xs.length) return null;
