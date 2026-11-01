@@ -80,13 +80,12 @@
   ];
 
   /* Reglas de arrendamiento (el porcentaje y la base de cada finca están en la pestaña Parámetros). */
-  // «insumos» en las reglas = sin el seguro: así el arrendamiento estimado no cambia al pasar el seguro de «Otros gastos» a insumos.
-  const insSinSeguro = (x) => x.insumos - (x.seguro || 0);
+  // Las reglas que restan insumos (Pomelos, L. Herrero y Cortijo) restan también el seguro, que va dentro de los insumos.
   const BASES = {
     ninguno: { label: 'Sin arrendamiento (en propiedad)', f: () => 0 },
-    'cosecha-recoleccion-insumos-poda': { label: '% de (cosecha − recolección − insumos − poda)', f: (x) => x.cosecha - x.recoleccion - insSinSeguro(x) - x.poda },
+    'cosecha-recoleccion-insumos-poda': { label: '% de (cosecha − recolección − insumos − poda)', f: (x) => x.cosecha - x.recoleccion - x.insumos - x.poda },
     'cosecha-recoleccion': { label: '% de (cosecha − recolección)', f: (x) => x.cosecha - x.recoleccion },
-    'ingresos-insumos-mocontratada': { label: '% de (ingresos − insumos − mano de obra contratada)', f: (x) => x.ingresos - insSinSeguro(x) - x.mo_contratada },
+    'ingresos-insumos-mocontratada': { label: '% de (ingresos − insumos − mano de obra contratada)', f: (x) => x.ingresos - x.insumos - x.mo_contratada },
   };
   function arrendamientoEstimado(x, regla) {
     if (!regla || !BASES[regla.base] || !(regla.pct > 0)) return 0;

@@ -4,7 +4,7 @@
    los presupuestos y parámetros. Guarda una copia en el aparato para verla sin conexión.
    El código no lleva datos: todo llega de tu hoja de Google. */
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 
 /* ---------- Utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);

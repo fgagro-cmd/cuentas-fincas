@@ -13,7 +13,7 @@ App para el móvil y el ordenador con la cuenta de resultados y los presupuestos
 - El código no lleva datos (el repositorio es público).
 
 ## Cálculos (los mismos del Excel)
-- Fertilizantes incluye bioestimulantes; fitosanitarios incluye herbicidas; seguro = gastos de tipo «Seguro» (desde la v1.1.0, entra en insumos pero no en las reglas de arrendamiento); resto = combustible + material de riego + enmienda orgánica.
+- Fertilizantes incluye bioestimulantes; fitosanitarios incluye herbicidas; seguro = gastos de tipo «Seguro» (desde la v1.1.0, dentro de insumos; resta en el arrendamiento de las fincas cuya regla resta insumos: Pomelos Herrero, Limoneros Herrero y Finca Cortijo); resto = combustible + material de riego + enmienda orgánica.
 - Tratamientos = fumigación + herbicida (tareas); desbroce = desbrozar + labrar; otras tareas = estiércol + otras + mejoras + mantenimiento.
 - Mano de obra propia = horas de tareas con y sin maquinaria × €/h (8 €/h, en Ajustes). Amortización de maquinaria = importe de esas tareas − mano de obra propia.
 - % var. = 1 − (media de las dos campañas anteriores ÷ real).
