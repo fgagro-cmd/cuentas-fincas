@@ -4,7 +4,7 @@
    los presupuestos y parámetros. Guarda una copia en el aparato para verla sin conexión.
    El código no lleva datos: todo llega de tu hoja de Google. */
 
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.3.0';
 
 /* ---------- Utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -65,7 +65,7 @@ let conn = { url: '', clave: '' };
 let datos = null;                       // lo último leído de la hoja
 let pend = { cambios: [], param: null }; // cambios hechos aquí y aún no guardados en la hoja
 let net = { running: false, lastError: '' };
-const ui = { tab: 'dashboard', camp: null, finca: '__all', modo: 'real', pcamp: null, pfinca: null, rmet: 'resultado' };
+const ui = { tab: 'dashboard', camp: null, finca: '__all', modo: 'real', pcamp: null, pfinca: null, rmet: 'resultado', grec: true, gmo: 'h' };
 let ultimoAjuste = null;               // { camp, fecha, items: [{ fincaId, concepto, previo }] } para «Deshacer»
 
 /* Derivados de los datos */
@@ -338,6 +338,69 @@ function svgRanking(W, filas, fmt) {
   if (min < 0) g += `<line class="grid zero" x1="${X(0)}" x2="${X(0)}" y1="0" y2="${H}"/>`;
   return `<svg class="viz" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
 }
+/* Barras apiladas por categoría (v1.3.0). capas: [{ nombre, cls (c1…c8), vals }] · fantasma: { i, v } contorno del total presupuestado */
+function svgApilado(W, { cats, capas, fmt = eur0, ax = kE, fantasma, destacar, totales = true }) {
+  const H = 220, L = 46, R = 8, T = 18, B = 26;
+  const tot = cats.map((_, ci) => capas.reduce((t, c) => t + Math.max(0, c.vals[ci] || 0), 0));
+  const tk = ticks(0, Math.max(1, ...tot, fantasma && ok(fantasma.v) ? fantasma.v : 0));
+  const y1 = tk[tk.length - 1], Y = (v) => T + (H - T - B) * (1 - v / y1);
+  const banda = (W - L - R) / cats.length, bw = Math.max(6, Math.min(40, banda * 0.66));
+  const cada = Math.ceil(cats.length / Math.max(3, Math.floor((W - L - R) / 40)));
+  let g = tk.map((v) => `<line class="grid${v === 0 ? ' zero' : ''}" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="ax" x="${L - 6}" y="${Y(v) + 3.5}" text-anchor="end">${ax(v)}</text>`).join('');
+  cats.forEach((c, ci) => {
+    const x = L + ci * banda + (banda - bw) / 2;
+    if ((ok(destacar) && destacar >= 0 ? (((ci - destacar) % cada) + cada) % cada === 0 : ci % cada === 0)) g += `<text class="ax${destacar === ci ? ' strong' : ''}" x="${L + ci * banda + banda / 2}" y="${H - 8}" text-anchor="middle">${esc(c)}</text>`;
+    if (fantasma && fantasma.i === ci && ok(fantasma.v) && fantasma.v > 0) g += `<rect class="ghost tot" x="${x - 2}" y="${Y(fantasma.v)}" width="${bw + 4}" height="${Y(0) - Y(fantasma.v)}" rx="3"/>`;
+    let base = 0;
+    for (const cp of capas) {
+      const v = Math.max(0, cp.vals[ci] || 0); if (!v) continue;
+      const h = Y(base) - Y(base + v);
+      g += `<rect class="bar seg ${cp.cls}" x="${x}" y="${Y(base + v)}" width="${bw}" height="${Math.max(1, h)}" rx="2"/>`;
+      base += v;
+    }
+    if (totales && tot[ci] > 0 && bw >= 20) g += `<text class="ax val" x="${x + bw / 2}" y="${Y(tot[ci]) - 4}" text-anchor="middle">${ax(tot[ci])}</text>`;
+    const filas = capas.filter((cp) => ok(cp.vals[ci]) && cp.vals[ci] !== 0).map((cp) => `${cp.nombre}: ${fmt(cp.vals[ci])}`);
+    const tip = `${c}\n` + (filas.length ? filas.join('\n') + (capas.length > 1 ? `\nTotal: ${fmt(tot[ci])}` : '') : 'sin datos') + (fantasma && fantasma.i === ci && ok(fantasma.v) ? `\nPresupuesto: ${fmt(fantasma.v)}` : '');
+    g += `<rect class="hit"${tipAttr(tip)} x="${L + ci * banda}" y="${T}" width="${banda}" height="${H - T - B}"/>`;
+  });
+  return `<svg class="viz" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
+/* Reparto en % con barras horizontales ordenadas (v1.3.0). filas: [{ nombre, v }] */
+function svgReparto(W, filas, fmt) {
+  filas = filas.filter((f) => ok(f.v) && f.v !== 0).sort((a, b) => b.v - a.v);
+  if (!filas.length) return '<p class="small">Sin datos en esta campaña.</p>';
+  const total = filas.reduce((t, f) => t + f.v, 0);
+  const fh = 30, H = filas.length * fh + 6, lw = Math.min(150, W * 0.36), vw = Math.min(124, W * 0.34);
+  const max = Math.max(...filas.map((f) => f.v), 0.0001), min = Math.min(0, ...filas.map((f) => f.v));
+  const X = (v) => lw + ((v - min) / (max - min || 1)) * (W - lw - vw - 6);
+  let g = '';
+  filas.forEach((f, i) => {
+    const y = i * fh + 4, pct = total ? (f.v / total) * 100 : 0;
+    const pTxt = nf(pct, pct < 10 && pct > -10 ? 1 : 0, pct < 10 && pct > -10 ? 1 : 0) + ' %';
+    g += `<text class="ax rk rp" x="0" y="${y + 18}">${esc(f.nombre.length > 20 ? f.nombre.slice(0, 19) + '…' : f.nombre)}</text>`;
+    const x = Math.min(X(0), X(f.v)), w = Math.max(2, Math.abs(X(f.v) - X(0)));
+    g += `<rect class="bar ${f.v < 0 ? 'negb' : 's1'}" x="${x}" y="${y + 6}" width="${w}" height="16" rx="3"/>`;
+    g += `<text class="ax val" x="${W}" y="${y + 18}" text-anchor="end"><tspan>${esc(pTxt)}</tspan><tspan class="mut"> · ${esc(fmt(f.v))}</tspan></text>`;
+    g += `<rect class="hit"${tipAttr(`${f.nombre}\n${fmt(f.v)} · ${pTxt} del total\nTotal: ${fmt(total)}`)} x="0" y="${y}" width="${W}" height="${fh}"/>`;
+  });
+  return `<svg class="viz" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
+/* Una barra partida en bloques (un todo en 3-4 partes). partes: [{ nombre, cls, v, tip }] */
+function svgSegmentos(W, partes, fmt) {
+  partes = partes.filter((p) => ok(p.v) && p.v > 0);
+  if (!partes.length) return '<p class="small">Sin datos en esta campaña.</p>';
+  const H = 40, total = partes.reduce((t, p) => t + p.v, 0);
+  let x = 0, g = '';
+  partes.forEach((p, i) => {
+    const w = (p.v / total) * W, pct = (p.v / total) * 100;
+    const gap = i < partes.length - 1 ? 2 : 0;
+    g += `<rect class="bar ${p.cls}" x="${x}" y="0" width="${Math.max(1, w - gap)}" height="${H}" rx="4"/>`;
+    if (w >= 44) g += `<text class="segt" x="${x + (w - gap) / 2}" y="${H / 2 + 4.5}" text-anchor="middle">${nf(pct, 0, 0)} %</text>`;
+    g += `<rect class="hit"${tipAttr(`${p.nombre}\n${fmt(p.v)} · ${nf(pct, 1, 1)} %${p.tip ? '\n' + p.tip : ''}`)} x="${x}" y="0" width="${w}" height="${H}"/>`;
+    x += w;
+  });
+  return `<svg class="viz" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+}
 const leyenda = (items) => `<div class="leg">${items.map(([cls, txt]) => `<span><i class="sw ${cls}"></i>${esc(txt)}</span>`).join('')}</div>`;
 /* Tooltip común a todos los gráficos */
 function onTip(e) {
@@ -402,6 +465,10 @@ function renderDashboard() {
   const etC = camps.map((cc) => String(cc));
   const dest = camps.indexOf(c);
   const ch = (f) => { const idc = 'ch' + dashCharts.length; dashCharts.push({ id: idc, f }); return `<div class="chart" id="${idc}"></div>`; };
+  // Producción total por finca (v1.3.0): una capa por finca, con su color fijo
+  const capasProd = (id === '__all' ? FINCAS : [fincaById(id)].filter(Boolean))
+    .map((f) => ({ nombre: f.nombre, cls: colorFinca(f.id), vals: camps.map((cc) => { const x = realDe(cc, f.id); return x && x.kg > 0 ? x.kg : null; }) }))
+    .filter((cp) => cp.vals.some(ok));
   const evo = `<section class="vcard"><h3>Evolución por campaña</h3><p class="vsub">${esc(nombreFinca(id))} · lo real de cada campaña${presAb ? `; ${camps[iAbierta]} va en curso y su contorno es el presupuesto` : ''}</p>
       ${ch((W) => svgBarras(W, { cats: etC, destacar: dest, series: [{ nombre: 'Ingresos', vals: xs.map((x) => (x ? x.ingresos : null)), cls: 's1' }, { nombre: 'Gastos', vals: xs.map((x) => (x ? x.gastos : null)), cls: 's2' }], fantasma: presAb ? { i: iAbierta, vals: [presAb.ingresos, presAb.gastos] } : null }))}
       ${leyenda([['s1', 'Ingresos'], ['s2', 'Gastos']])}
@@ -411,8 +478,9 @@ function renderDashboard() {
       ${ch((W) => svgLineas(W, { etiquetas: etC, fmt: (v) => nf(v, 3, 3) + ' €/kg', series: [{ nombre: 'Precio medio', vals: xs.map((x, i) => (x && x.kg > 0 && i !== iAbierta ? x.precio : null)), cls: 's1' }, { nombre: 'Coste sin arrendamiento', vals: xs.map((x, i) => (x && x.kg > 0 && i !== iAbierta ? x.coste_prod : null)), cls: 's2' }], ax: (v) => nf(v, 2, 2) }))}
       ${leyenda([['s1', 'Precio medio'], ['s2', 'Coste de producción sin arrendamiento']])}
       ${iAbierta >= 0 ? `<p class="small" style="margin:2px 0 0">Sin ${camps[iAbierta]}: hasta que entre la cosecha el €/kg no es comparable.</p>` : ''}
-      <h4>Producción (kg/ha)</h4>
-      ${ok(pf(id).ha) ? ch((W) => svgBarras(W, { cats: etC, destacar: dest, etiquetar: true, fmt: (v) => nf(v, 0, 0) + ' kg/ha', series: [{ nombre: 'kg/ha', vals: xs.map((x) => (x && x.kg > 0 ? x.kg_ha : null)), cls: 's1' }], fantasma: presAb && ok(presAb.kg_ha) ? { i: iAbierta, vals: [presAb.kg_ha] } : null })) : '<p class="small">Falta la superficie en el Maestro de fincas.</p>'}
+      <h4>Producción total (kg)${id === '__all' ? ' por finca' : ''}</h4>
+      ${capasProd.length ? ch((W) => svgApilado(W, { cats: etC, destacar: dest, capas: capasProd, fmt: kgTxt, fantasma: presAb && presAb.kg > 0 ? { i: iAbierta, v: presAb.kg } : null }))
+        + leyenda(capasProd.map((cp) => [cp.cls + ' blk', cp.nombre]).concat(presAb && presAb.kg > 0 ? [['ghs blk', `Presupuesto ${camps[iAbierta]}`]] : [])) : '<p class="small">Sin kilos de cosecha anotados.</p>'}
     </section>`;
   // 3 · Ranking de fincas
   const m = RMET[ui.rmet] || RMET.resultado;
@@ -441,17 +509,114 @@ function renderDashboard() {
   $('#dFinca').onchange = (e) => { ui.finca = e.target.value; saveUi(); renderAll(); };
   $('#dModo').onclick = (e) => { const b = e.target.closest('[data-m]'); if (b) { ui.modo = b.dataset.m; saveUi(); renderAll(); } };
   $('#dMet').onclick = (e) => { const b = e.target.closest('[data-r]'); if (b) { ui.rmet = b.dataset.r; saveUi(); renderAll(); } };
+  bindTips();
+  bindAviso();
+}
+function bindTips() {
   const v = $('#view');
   v.onpointermove = onTip; v.onpointerdown = onTip;
   v.onpointerleave = () => { const t = $('#vizTip'); if (t) t.hidden = true; document.querySelectorAll('.viz .col.on').forEach((x) => x.classList.remove('on')); };
-  bindAviso();
 }
 function drawCharts() {
   for (const d of dashCharts) { const el = document.getElementById(d.id); if (el) el.innerHTML = d.f(Math.max(260, Math.floor(el.clientWidth))); }
 }
 function headDashboard() { return kpis(realDe(ui.camp, ui.finca), `real ${ui.camp}`) + presLine(presDe(ui.camp, ui.finca), ui.camp); }
 let rsTimer;
-window.addEventListener('resize', () => { clearTimeout(rsTimer); rsTimer = setTimeout(() => { if (ui.tab === 'dashboard') drawCharts(); }, 200); });
+window.addEventListener('resize', () => { clearTimeout(rsTimer); rsTimer = setTimeout(() => { if (ui.tab === 'dashboard' || ui.tab === 'graficos') drawCharts(); }, 200); });
+
+/* ---------- Pestaña: Gráficos (v1.3.0) ---------- */
+const kgTxt = (v) => nf(v, 0, 0) + ' kg';
+const hTxt = (v) => nf(v, 0, Math.abs(v) < 10 ? 1 : 0) + ' h';
+const hAx = (v) => nf(v, 0, 0);
+/* Colores fijos: cada finca y cada tipo de tarea lleva siempre el mismo (no cambia al filtrar) */
+const colorFinca = (fid) => { const i = FINCAS.findIndex((f) => f.id === fid); return 'c' + ((i < 0 ? 7 : i % 8) + 1); };
+const TAREA_COLOR = { 'Fumigación': 'c1', 'Herbicida': 'c2', 'Poda': 'c3', 'Desbrozar': 'c4', 'Labrar': 'c5', 'Mejoras': 'c6', 'Mantenimiento': 'c7' };
+const TAREA_ORDEN = ['Fumigación', 'Herbicida', 'Poda', 'Desbrozar', 'Labrar', 'Mejoras', 'Mantenimiento'];
+const MO_TIPOS = [['Contratado', 'Contratadas', 'c1'], ['Con maquinaria', 'Con maquinaria', 'c2'], ['Sin maquinaria', 'Sin maquinaria', 'c3']];
+function grafDe(camp, id) {
+  const k = 'g|' + camp + '|' + id;
+  if (!memo.has(k)) memo.set(k, CU.graficos(LINEAS, camp, id === '__all' ? null : nombreFinca(id)));
+  return memo.get(k);
+}
+function renderGraficos() {
+  const c = ui.camp, id = ui.finca;
+  const aviso = avisoSinDatos();
+  if (!LINEAS.length) { $('#view').innerHTML = aviso; bindAviso(); return; }
+  const g = grafDe(c, id);
+  dashCharts = [];
+  const ch = (f) => { const idc = 'ch' + dashCharts.length; dashCharts.push({ id: idc, f }); return `<div class="chart" id="${idc}"></div>`; };
+  const sitio = esc(nombreFinca(id)) + ' · ' + c;
+  // 1 · Importe por tarea
+  const filasEur = [...g.tareasEur].filter(([t]) => ui.grec || t !== 'Recolección').map(([nombre, v]) => ({ nombre, v }));
+  const totEur = filasEur.reduce((t, f) => t + f.v, 0);
+  const cImp = `<section class="vcard"><h3>Importe por tarea</h3><p class="vsub">${sitio} · ${eur0(totEur)} en tareas${ui.grec ? '' : ' sin recolección'}</p>
+    <div class="seg" id="gRec"><button data-v="1" aria-pressed="${!!ui.grec}">Con recolección</button><button data-v="0" aria-pressed="${!ui.grec}">Sin recolección</button></div>
+    ${ch((W) => svgReparto(W, filasEur, eur0))}</section>`;
+  // 2 · Mano de obra: contratada, con maquinaria y sin maquinaria
+  const enH = ui.gmo !== 'eur';
+  const moFilas = MO_TIPOS.map(([k, nombre, cls]) => { const m = g.mo[k] || { h: 0, eur: 0 }; return { nombre, cls, h: m.h, eur: m.eur }; });
+  const otrosMo = Object.entries(g.mo).filter(([k]) => !MO_TIPOS.some((t) => t[0] === k));
+  for (const [k, m] of otrosMo) moFilas.push({ nombre: k, cls: 'c8', h: m.h, eur: m.eur });
+  const cMo = `<section class="vcard"><h3>Tareas por tipo de mano de obra</h3><p class="vsub">${sitio} · horas contratadas, con maquinaria y sin maquinaria</p>
+    <div class="seg" id="gMo"><button data-v="h" aria-pressed="${enH}">Horas</button><button data-v="eur" aria-pressed="${!enH}">Importe</button></div>
+    ${ch((W) => svgSegmentos(W, moFilas.map((f) => ({ nombre: f.nombre, cls: f.cls, v: enH ? f.h : f.eur, tip: enH ? eur0(f.eur) : hTxt(f.h) })), enH ? hTxt : eur0))}
+    <table class="mini"><thead><tr><th></th><th>Horas</th><th>Importe</th><th>€/h</th></tr></thead><tbody>
+      ${moFilas.filter((f) => f.h || f.eur).map((f) => `<tr><td><i class="sw ${f.cls} blk"></i>${esc(f.nombre)}</td><td>${hTxt(f.h)}</td><td>${eur0(f.eur)}</td><td>${f.h > 0 ? nf(f.eur / f.h, 2, 2) : '—'}</td></tr>`).join('')}
+    </tbody></table>
+    ${g.sinHoras.n ? `<p class="small" style="margin:6px 0 0">${nf(g.sinHoras.n)} ${g.sinHoras.n === 1 ? 'tarea' : 'tareas'} solo con importe (${esc([...g.sinHoras.tipos].join(', '))}; ${eur0(g.sinHoras.eur)}): cuentan en el importe, no en las horas, y su €/h sale más alto.</p>` : ''}</section>`;
+  // 3 · Gasto en insumos
+  const cIns = `<section class="vcard"><h3>Gasto en insumos</h3><p class="vsub">${sitio} · ${eur0(g.insumosTotal)} (fertilizantes, bioestimulantes, fitosanitarios, herbicidas, agua, seguro, combustible, material de riego y enmiendas)</p>
+    ${ch((W) => svgReparto(W, [...g.insumos].map(([nombre, v]) => ({ nombre, v })), eur0))}</section>`;
+  // 4 · Horas por tarea
+  const cHor = `<section class="vcard"><h3>Horas por tarea</h3><p class="vsub">${sitio} · ${hTxt(g.horas)} trabajadas (propias y contratadas)</p>
+    ${ch((W) => svgReparto(W, [...g.tareasH].map(([nombre, v]) => ({ nombre, v })), hTxt))}</section>`;
+  // 5 · Horas por mes y tipo de tarea
+  const offs = [...g.meses.keys()];
+  let cMes;
+  if (!offs.length) cMes = `<section class="vcard"><h3>Horas por mes</h3><p class="small">Sin horas anotadas en esta campaña.</p></section>`;
+  else {
+    const a = Math.min(0, ...offs), z = Math.max(11, ...offs);
+    const meses = []; for (let o = a; o <= z; o++) meses.push(o);
+    const tiposCon = new Set(); for (const m of g.meses.values()) for (const [t, v] of m) if (v) tiposCon.add(t);
+    const grupos = TAREA_ORDEN.filter((t) => tiposCon.has(t)).map((t) => ({ nombre: t, cls: TAREA_COLOR[t], tipos: [t] }));
+    const resto = [...tiposCon].filter((t) => !TAREA_COLOR[t]);
+    if (resto.length) grupos.push({ nombre: resto.length === 1 ? resto[0] : 'Otras', cls: 'c8', tipos: resto });
+    const capas = grupos.map((gr) => ({ nombre: gr.nombre, cls: gr.cls, vals: meses.map((o) => { const m = g.meses.get(o); return m ? gr.tipos.reduce((t, tp) => t + (m.get(tp) || 0), 0) : 0; }) }));
+    const tot = meses.map((_, i) => capas.reduce((t, cp) => t + cp.vals[i], 0));
+    const iMax = tot.indexOf(Math.max(...tot));
+    const media = tot.reduce((t, v) => t + v, 0) / tot.filter((v) => v > 0).length;
+    const top = [...tot.keys()].filter((i) => tot[i] > 0).sort((x, y) => tot[y] - tot[x]).slice(0, 3).map((i) => `${etiquetaMes(c, meses[i])} (${hTxt(tot[i])})`);
+    cMes = `<section class="vcard wide"><h3>Horas por mes y tarea</h3><p class="vsub">${sitio} · para ver en qué meses hay más trabajo</p>
+      <p class="vstat">Meses con más horas: ${esc(top.join(' · '))} · media ${hTxt(media)} en los meses con trabajo</p>
+      ${ch((W) => svgApilado(W, { cats: meses.map((o) => etiquetaMes(c, o)), capas, fmt: hTxt, ax: hAx, destacar: iMax }))}
+      ${leyenda(capas.map((cp) => [cp.cls + ' blk', cp.nombre + (cp.nombre === 'Otras' ? ` (${resto.join(', ')})` : '')]))}</section>`;
+  }
+  $('#view').innerHTML = `
+    <div class="sel">
+      <select id="gCamp" aria-label="Campaña">${campOpts(c)}</select>
+      <select id="gFinca" aria-label="Finca">${fincaOpts(id, true)}</select>
+    </div>
+    ${aviso}
+    ${g.n ? `<div class="dgrid">${cImp}${cMo}${cIns}${cHor}${cMes}</div>` : `<div class="empty">Sin líneas en la campaña ${c}${id === '__all' ? '' : ' para ' + esc(nombreFinca(id))}.</div>`}
+    <p class="legend">Toca un gráfico para ver los valores. Lo real de la campaña${CU.campanaAbierta(c, hoyISO()) ? ' hasta hoy' : ''}. Las horas son la cantidad anotada en cada tarea.</p>
+    <div id="vizTip" class="viztip" hidden></div>`;
+  drawCharts();
+  $('#gCamp').onchange = (e) => { ui.camp = Number(e.target.value); saveUi(); renderAll(); };
+  $('#gFinca').onchange = (e) => { ui.finca = e.target.value; saveUi(); renderAll(); };
+  const gr = $('#gRec'); if (gr) gr.onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.grec = b.dataset.v === '1'; saveUi(); renderAll(); } };
+  const gm = $('#gMo'); if (gm) gm.onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.gmo = b.dataset.v; saveUi(); renderAll(); } };
+  bindTips();
+  bindAviso();
+}
+function headGraficos() {
+  const g = grafDe(ui.camp, ui.finca);
+  return `<div class="kpis">
+    <div class="k hero"><span>Horas de trabajo · ${ui.camp}</span><strong>${hTxt(g.horas)}</strong></div>
+    <div class="k"><span>Tareas</span><strong>${eur0(g.tareas)}</strong></div>
+    <div class="k"><span>Insumos</span><strong>${eur0(g.insumosTotal)}</strong></div>
+    <div class="k"><span>€/h medio</span><strong>${g.horas > 0 ? nf(g.eurConHoras / g.horas, 2, 2) : '—'}</strong></div>
+  </div>`;
+}
 
 /* ---------- Pestaña: Resultados (como la pestaña del Excel) ---------- */
 function celda(v, tipo, cls, drill) {
@@ -845,6 +1010,7 @@ function drawFincas(box) {
 /* ---------- Render general ---------- */
 const TABS = {
   dashboard: { title: 'Dashboard', head: headDashboard, render: renderDashboard },
+  graficos: { title: 'Gráficos', head: headGraficos, render: renderGraficos },
   resultados: { title: 'Cuenta de resultados', head: headResultados, render: renderResultados },
   fincas: { title: 'Comparar fincas', head: headFincas, render: renderFincas },
   presupuesto: { title: 'Presupuesto', head: headPresupuesto, render: renderPresupuesto },
@@ -857,7 +1023,7 @@ function renderAll() {
   renderStatus();
   t.render();
 }
-function saveUi() { save('ui', { v: 2, tab: ui.tab, camp: ui.camp, finca: ui.finca, modo: ui.modo, pcamp: ui.pcamp, pfinca: ui.pfinca, rmet: ui.rmet }); }
+function saveUi() { save('ui', { v: 2, tab: ui.tab, camp: ui.camp, finca: ui.finca, modo: ui.modo, pcamp: ui.pcamp, pfinca: ui.pfinca, rmet: ui.rmet, grec: ui.grec, gmo: ui.gmo }); }
 
 async function init() {
   document.querySelectorAll('.tab').forEach((b) => b.onclick = () => { ui.tab = b.dataset.tab; saveUi(); window.scrollTo(0, 0); renderAll(); });

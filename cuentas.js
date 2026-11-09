@@ -298,6 +298,36 @@
     return { meses, cur: vc, prev: vp, curTot: cur.tot, prevMisma: prvMisma, prevTotal: prv.tot, abierta, hoyOff };
   }
 
-  const api = { SECCIONES, FILAS, ENTRADAS, BASES, FILTRO, real, presupuesto, sumar, variacion, arrendamientoEstimado, lineasConcepto, r2, ajusteReal, aplicarAjuste, arrendamientoTras, ritmo, campanaAbierta };
+  /* ---------- Gráficos (v1.3.0) ----------
+     Reparto de una campaña y finca (o explotación, finca = null):
+     - tareasEur / tareasH: importe y horas por tipo de tarea (la cantidad de las tareas son horas).
+     - mo: por tipo 2 (Contratado, Con maquinaria, Sin maquinaria) → { h, eur }.
+     - insumos: importe por tipo de gasto de insumos (los mismos de «Gasto en insumos»).
+     - meses: horas por mes (desplazamiento respecto a enero del año de la campaña) y tipo de tarea.
+     - sinHoras: tareas con importe pero cantidad 0 (p. ej. la recolección contratada): no suman horas. */
+  function graficos(lineas, campana, finca) {
+    const L = lineasDe(lineas, campana, finca);
+    const add = (m, k, v) => m.set(k, (m.get(k) || 0) + v);
+    const tareasEur = new Map(), tareasH = new Map(), insumos = new Map(), meses = new Map(), mo = {};
+    const sinHoras = { n: 0, eur: 0, tipos: new Set() };
+    let horas = 0, eurConHoras = 0, tareas = 0, totInsumos = 0;
+    for (const l of L) {
+      if (l.categoria === 'Tarea') {
+        const t = l.tipo || 'Sin tipo', t2 = l.tipo2 || 'Sin tipo 2';
+        add(tareasEur, t, l.importe); tareas += l.importe;
+        const m = (mo[t2] ||= { h: 0, eur: 0 }); m.eur += l.importe;
+        if (l.cantidad) {
+          add(tareasH, t, l.cantidad); m.h += l.cantidad; horas += l.cantidad; eurConHoras += l.importe;
+          if (l.fecha) {
+            const off = Math.max(-3, Math.min(20, mesDe(l.fecha) - campana * 12));
+            add(meses.get(off) || meses.set(off, new Map()).get(off), t, l.cantidad);
+          }
+        } else if (l.importe) { sinHoras.n++; sinHoras.eur += l.importe; sinHoras.tipos.add(t); }
+      } else if (FILTRO.insumos(l)) { add(insumos, l.tipo, l.importe); totInsumos += l.importe; }
+    }
+    return { n: L.length, tareasEur, tareasH, mo, insumos, meses, sinHoras, horas, eurConHoras, tareas, insumosTotal: totInsumos };
+  }
+
+  const api = { SECCIONES, FILAS, ENTRADAS, BASES, FILTRO, real, presupuesto, sumar, variacion, arrendamientoEstimado, lineasConcepto, r2, ajusteReal, aplicarAjuste, arrendamientoTras, ritmo, campanaAbierta, graficos };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.CU = api;
 })(typeof window !== 'undefined' ? window : globalThis);
