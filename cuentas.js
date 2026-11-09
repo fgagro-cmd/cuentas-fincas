@@ -304,7 +304,8 @@
      - mo: por tipo 2 (Contratado, Con maquinaria, Sin maquinaria) → { h, eur }.
      - insumos: importe por tipo de gasto de insumos (los mismos de «Gasto en insumos»).
      - meses: horas por mes (desplazamiento respecto a enero del año de la campaña) y tipo de tarea.
-     - sinHoras: tareas con importe pero cantidad 0 (p. ej. la recolección contratada): no suman horas. */
+     - sinHoras: tareas con importe pero cantidad 0: no suman horas.
+     Sin recolección ni arrendamiento (v1.3.1, decisión de Francis): la recolección no entra; el arrendamiento no es tarea ni insumo. */
   function graficos(lineas, campana, finca) {
     const L = lineasDe(lineas, campana, finca);
     const add = (m, k, v) => m.set(k, (m.get(k) || 0) + v);
@@ -312,6 +313,7 @@
     const sinHoras = { n: 0, eur: 0, tipos: new Set() };
     let horas = 0, eurConHoras = 0, tareas = 0, totInsumos = 0;
     for (const l of L) {
+      if (l.categoria === 'Tarea' && l.tipo === 'Recolección') continue;
       if (l.categoria === 'Tarea') {
         const t = l.tipo || 'Sin tipo', t2 = l.tipo2 || 'Sin tipo 2';
         add(tareasEur, t, l.importe); tareas += l.importe;

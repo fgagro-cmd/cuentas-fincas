@@ -4,7 +4,7 @@
    los presupuestos y parámetros. Guarda una copia en el aparato para verla sin conexión.
    El código no lleva datos: todo llega de tu hoja de Google. */
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 
 /* ---------- Utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -65,7 +65,7 @@ let conn = { url: '', clave: '' };
 let datos = null;                       // lo último leído de la hoja
 let pend = { cambios: [], param: null }; // cambios hechos aquí y aún no guardados en la hoja
 let net = { running: false, lastError: '' };
-const ui = { tab: 'dashboard', camp: null, finca: '__all', modo: 'real', pcamp: null, pfinca: null, rmet: 'resultado', grec: true, gmo: 'h' };
+const ui = { tab: 'dashboard', camp: null, finca: '__all', modo: 'real', pcamp: null, pfinca: null, rmet: 'resultado', gmo: 'h' };
 let ultimoAjuste = null;               // { camp, fecha, items: [{ fincaId, concepto, previo }] } para «Deshacer»
 
 /* Derivados de los datos */
@@ -547,10 +547,8 @@ function renderGraficos() {
   const ch = (f) => { const idc = 'ch' + dashCharts.length; dashCharts.push({ id: idc, f }); return `<div class="chart" id="${idc}"></div>`; };
   const sitio = esc(nombreFinca(id)) + ' · ' + c;
   // 1 · Importe por tarea
-  const filasEur = [...g.tareasEur].filter(([t]) => ui.grec || t !== 'Recolección').map(([nombre, v]) => ({ nombre, v }));
-  const totEur = filasEur.reduce((t, f) => t + f.v, 0);
-  const cImp = `<section class="vcard"><h3>Importe por tarea</h3><p class="vsub">${sitio} · ${eur0(totEur)} en tareas${ui.grec ? '' : ' sin recolección'}</p>
-    <div class="seg" id="gRec"><button data-v="1" aria-pressed="${!!ui.grec}">Con recolección</button><button data-v="0" aria-pressed="${!ui.grec}">Sin recolección</button></div>
+  const filasEur = [...g.tareasEur].map(([nombre, v]) => ({ nombre, v }));
+  const cImp = `<section class="vcard"><h3>Importe por tarea</h3><p class="vsub">${sitio} · ${eur0(g.tareas)} en tareas</p>
     ${ch((W) => svgReparto(W, filasEur, eur0))}</section>`;
   // 2 · Mano de obra: contratada, con maquinaria y sin maquinaria
   const enH = ui.gmo !== 'eur';
@@ -563,7 +561,7 @@ function renderGraficos() {
     <table class="mini"><thead><tr><th></th><th>Horas</th><th>Importe</th><th>€/h</th></tr></thead><tbody>
       ${moFilas.filter((f) => f.h || f.eur).map((f) => `<tr><td><i class="sw ${f.cls} blk"></i>${esc(f.nombre)}</td><td>${hTxt(f.h)}</td><td>${eur0(f.eur)}</td><td>${f.h > 0 ? nf(f.eur / f.h, 2, 2) : '—'}</td></tr>`).join('')}
     </tbody></table>
-    ${g.sinHoras.n ? `<p class="small" style="margin:6px 0 0">${nf(g.sinHoras.n)} ${g.sinHoras.n === 1 ? 'tarea' : 'tareas'} solo con importe (${esc([...g.sinHoras.tipos].join(', '))}; ${eur0(g.sinHoras.eur)}): cuentan en el importe, no en las horas, y su €/h sale más alto.</p>` : ''}</section>`;
+    ${g.sinHoras.n ? `<p class="small" style="margin:6px 0 0">${nf(g.sinHoras.n)} ${g.sinHoras.n === 1 ? 'tarea' : 'tareas'} solo con importe, sin horas (${esc([...g.sinHoras.tipos].join(', '))}; ${eur0(g.sinHoras.eur)}): cuentan en el importe, no en las horas.</p>` : ''}</section>`;
   // 3 · Gasto en insumos
   const cIns = `<section class="vcard"><h3>Gasto en insumos</h3><p class="vsub">${sitio} · ${eur0(g.insumosTotal)} (fertilizantes, bioestimulantes, fitosanitarios, herbicidas, agua, seguro, combustible, material de riego y enmiendas)</p>
     ${ch((W) => svgReparto(W, [...g.insumos].map(([nombre, v]) => ({ nombre, v })), eur0))}</section>`;
@@ -598,12 +596,11 @@ function renderGraficos() {
     </div>
     ${aviso}
     ${g.n ? `<div class="dgrid">${cImp}${cMo}${cIns}${cHor}${cMes}</div>` : `<div class="empty">Sin líneas en la campaña ${c}${id === '__all' ? '' : ' para ' + esc(nombreFinca(id))}.</div>`}
-    <p class="legend">Toca un gráfico para ver los valores. Lo real de la campaña${CU.campanaAbierta(c, hoyISO()) ? ' hasta hoy' : ''}. Las horas son la cantidad anotada en cada tarea.</p>
+    <p class="legend">Toca un gráfico para ver los valores. Lo real de la campaña${CU.campanaAbierta(c, hoyISO()) ? ' hasta hoy' : ''}. Sin recolección ni arrendamiento. Las horas son la cantidad anotada en cada tarea.</p>
     <div id="vizTip" class="viztip" hidden></div>`;
   drawCharts();
   $('#gCamp').onchange = (e) => { ui.camp = Number(e.target.value); saveUi(); renderAll(); };
   $('#gFinca').onchange = (e) => { ui.finca = e.target.value; saveUi(); renderAll(); };
-  const gr = $('#gRec'); if (gr) gr.onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.grec = b.dataset.v === '1'; saveUi(); renderAll(); } };
   const gm = $('#gMo'); if (gm) gm.onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) { ui.gmo = b.dataset.v; saveUi(); renderAll(); } };
   bindTips();
   bindAviso();
@@ -1023,7 +1020,7 @@ function renderAll() {
   renderStatus();
   t.render();
 }
-function saveUi() { save('ui', { v: 2, tab: ui.tab, camp: ui.camp, finca: ui.finca, modo: ui.modo, pcamp: ui.pcamp, pfinca: ui.pfinca, rmet: ui.rmet, grec: ui.grec, gmo: ui.gmo }); }
+function saveUi() { save('ui', { v: 2, tab: ui.tab, camp: ui.camp, finca: ui.finca, modo: ui.modo, pcamp: ui.pcamp, pfinca: ui.pfinca, rmet: ui.rmet, gmo: ui.gmo }); }
 
 async function init() {
   document.querySelectorAll('.tab').forEach((b) => b.onclick = () => { ui.tab = b.dataset.tab; saveUi(); window.scrollTo(0, 0); renderAll(); });
